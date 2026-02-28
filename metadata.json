@@ -1,0 +1,5 @@
+{
+  "name": "Passport to Data",
+  "description": "Extract data from passport images using AI.",
+  "requestFramePermissions": []
+}
