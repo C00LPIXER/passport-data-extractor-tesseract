@@ -1,8 +1,9 @@
 import React, { useState, useRef } from 'react';
 import Tesseract from 'tesseract.js';
 import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
-import { UploadCloud, FileImage, Loader2, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+// Use a runtime URL for the PDF.js worker (compatible with Vite + TypeScript)
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { UploadCloud, FileImage, Loader2, CheckCircle2, AlertCircle, RefreshCw, Copy, ClipboardCheck } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -18,6 +19,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 interface PassportData {
   passportNumber: string;
+  fullName: string;
   surname: string;
   givenNames: string;
   nationality: string;
@@ -35,8 +37,46 @@ export default function App() {
   const [progressMsg, setProgressMsg] = useState<string>('');
   const [passportData, setPassportData] = useState<PassportData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const copyToClipboard = async (text: string, fieldName: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(fieldName);
+      setTimeout(() => setCopiedField(null), 2000);
+    } catch {
+      // Fallback for older browsers
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setCopiedField(fieldName);
+      setTimeout(() => setCopiedField(null), 2000);
+    }
+  };
+
+  const copyAllData = () => {
+    if (!passportData) return;
+    const data = {
+      fullName: passportData.fullName,
+      surname: passportData.surname,
+      givenNames: passportData.givenNames,
+      passportNumber: passportData.passportNumber,
+      nationality: passportData.nationality,
+      dateOfBirth: passportData.dateOfBirth,
+      sex: passportData.sex,
+      dateOfExpiry: passportData.dateOfExpiry,
+      mrzLine1: passportData.mrzLine1,
+      mrzLine2: passportData.mrzLine2,
+    };
+    copyToClipboard(JSON.stringify(data, null, 2), '_all');
+  };
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -187,8 +227,11 @@ export default function App() {
       return `${fullYear}-${month}-${day}`;
     };
 
+    const fullName = [givenNames, surname].filter(Boolean).join(' ');
+
     return {
       passportNumber,
+      fullName,
       surname,
       givenNames,
       nationality: nationality || issuingCountry,
@@ -486,7 +529,23 @@ export default function App() {
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
                 <span>Extracted Details</span>
-                {passportData && <Badge variant="secondary" className="bg-blue-100 text-blue-800 hover:bg-blue-100">MRZ Parsed</Badge>}
+                <div className="flex items-center gap-2">
+                  {passportData && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={copyAllData}
+                      className="text-xs h-7"
+                    >
+                      {copiedField === '_all' ? (
+                        <><ClipboardCheck className="w-3 h-3 mr-1" />Copied!</>
+                      ) : (
+                        <><Copy className="w-3 h-3 mr-1" />Copy All</>
+                      )}
+                    </Button>
+                  )}
+                  {passportData && <Badge variant="secondary" className="bg-blue-100 text-blue-800 hover:bg-blue-100">MRZ Parsed</Badge>}
+                </div>
               </CardTitle>
               <CardDescription>Data parsed from the Machine Readable Zone (MRZ).</CardDescription>
             </CardHeader>
@@ -527,21 +586,33 @@ export default function App() {
 
               {passportData && (
                 <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                  {/* Full Name — single column spanning full width */}
+                  <DataField label="Full Name" value={passportData.fullName} highlight onCopy={() => copyToClipboard(passportData.fullName, 'fullName')} copied={copiedField === 'fullName'} />
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <DataField label="Passport Number" value={passportData.passportNumber} highlight />
-                    <DataField label="Nationality" value={passportData.nationality} />
-                    <DataField label="Surname" value={passportData.surname} />
-                    <DataField label="Given Names" value={passportData.givenNames} />
-                    <DataField label="Date of Birth" value={passportData.dateOfBirth} />
-                    <DataField label="Sex" value={passportData.sex} />
-                    <DataField label="Date of Expiry" value={passportData.dateOfExpiry} highlight />
+                    <DataField label="Surname" value={passportData.surname} onCopy={() => copyToClipboard(passportData.surname, 'surname')} copied={copiedField === 'surname'} />
+                    <DataField label="Given Names" value={passportData.givenNames} onCopy={() => copyToClipboard(passportData.givenNames, 'givenNames')} copied={copiedField === 'givenNames'} />
+                    <DataField label="Passport Number" value={passportData.passportNumber} highlight onCopy={() => copyToClipboard(passportData.passportNumber, 'passportNumber')} copied={copiedField === 'passportNumber'} />
+                    <DataField label="Nationality" value={passportData.nationality} onCopy={() => copyToClipboard(passportData.nationality, 'nationality')} copied={copiedField === 'nationality'} />
+                    <DataField label="Date of Birth" value={passportData.dateOfBirth} onCopy={() => copyToClipboard(passportData.dateOfBirth, 'dob')} copied={copiedField === 'dob'} />
+                    <DataField label="Sex" value={passportData.sex} onCopy={() => copyToClipboard(passportData.sex, 'sex')} copied={copiedField === 'sex'} />
+                    <DataField label="Date of Expiry" value={passportData.dateOfExpiry} highlight onCopy={() => copyToClipboard(passportData.dateOfExpiry, 'expiry')} copied={copiedField === 'expiry'} />
                   </div>
 
                   {(passportData.mrzLine1 || passportData.mrzLine2) && (
                     <>
                       <Separator />
                       <div className="space-y-2">
-                        <Label className="text-xs text-slate-500 uppercase tracking-wider">Machine Readable Zone (MRZ)</Label>
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs text-slate-500 uppercase tracking-wider">Machine Readable Zone (MRZ)</Label>
+                          <button
+                            onClick={() => copyToClipboard(`${passportData.mrzLine1}\n${passportData.mrzLine2}`, 'mrz')}
+                            className="text-slate-400 hover:text-slate-200 transition-colors p-1 rounded"
+                            title="Copy MRZ"
+                          >
+                            {copiedField === 'mrz' ? <ClipboardCheck className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
                         <div className="bg-slate-900 rounded-md p-4 font-mono text-emerald-400 text-xs sm:text-sm overflow-x-auto whitespace-pre">
                           {passportData.mrzLine1 && <div>{passportData.mrzLine1}</div>}
                           {passportData.mrzLine2 && <div>{passportData.mrzLine2}</div>}
@@ -559,12 +630,31 @@ export default function App() {
   );
 }
 
-function DataField({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
+function DataField({ label, value, highlight = false, onCopy, copied = false }: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+  onCopy?: () => void;
+  copied?: boolean;
+}) {
   return (
     <div className="space-y-1.5">
       <Label className="text-xs text-slate-500 uppercase tracking-wider">{label}</Label>
-      <div className={`px-3 py-2 rounded-md border ${highlight ? 'bg-blue-50 border-blue-200 text-blue-900 font-medium' : 'bg-slate-50 border-slate-200 text-slate-900'}`}>
-        {value || <span className="text-slate-400 italic">Not found</span>}
+      <div className={`group relative flex items-center justify-between gap-2 px-3 py-2 rounded-md border ${
+        highlight
+          ? 'bg-blue-50 border-blue-200 text-blue-900 font-medium'
+          : 'bg-slate-50 border-slate-200 text-slate-900'
+      }`}>
+        <span className="truncate">{value || <span className="text-slate-400 italic">Not found</span>}</span>
+        {onCopy && value && (
+          <button
+            onClick={onCopy}
+            className="shrink-0 text-slate-400 hover:text-slate-700 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+            title={`Copy ${label}`}
+          >
+            {copied ? <ClipboardCheck className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+          </button>
+        )}
       </div>
     </div>
   );

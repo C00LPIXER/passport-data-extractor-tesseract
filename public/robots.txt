@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://passport-to-data.app/sitemap.xml
