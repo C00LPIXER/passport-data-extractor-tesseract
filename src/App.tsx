@@ -128,8 +128,38 @@ export default function App() {
     return null;
   };
 
+  const cleanMRZLine1 = (line: string): string => {
+    // MRZ Line 1 format: P<CCCNNNNN<<NNNNN<<<<<<... (44 chars)
+    // OCR commonly misreads '<' as 'C' (visually similar in OCR-B font)
+    // This function attempts to restore '<' characters when they've been misread
+    if (line.length < 44) return line;
+
+    const nameSection = line.substring(5); // Skip P<CCC (type + country)
+
+    // If << separator already exists, no correction needed
+    if (nameSection.includes('<<')) return line;
+
+    let cleaned = nameSection;
+
+    // Step 1: Restore trailing '<' filler characters
+    // The name field is padded with '<' but OCR reads them as C, E, L, A, etc.
+    // A run of 2+ C's followed by a mix of C/E/L/A at the end is almost certainly filler.
+    cleaned = cleaned.replace(/[C<]{2,}[CELA<]*$/, match => '<'.repeat(match.length));
+
+    // Step 2: Restore '<<' separator between surname and given names
+    // Use greedy match to find the last 'CC' (misread '<<') before given names + filler
+    if (!cleaned.includes('<<')) {
+      cleaned = cleaned.replace(/^(.+)CC([A-Z]+<+)$/, '$1<<$2');
+    }
+
+    return line.substring(0, 5) + cleaned;
+  };
+
   const parseMRZ = (lines: string[]): PassportData => {
-    const [line1, line2] = lines;
+    const [line1Raw, line2] = lines;
+
+    // Clean line 1 to fix OCR misreads of '<' as 'C' etc.
+    const line1 = cleanMRZLine1(line1Raw);
     
     const issuingCountry = line1.substring(2, 5).replace(/</g, '');
     const nameString = line1.substring(5).split('<<');
@@ -165,7 +195,7 @@ export default function App() {
       dateOfBirth: formatMRZDate(dobRaw),
       sex: sexRaw === 'M' ? 'Male' : sexRaw === 'F' ? 'Female' : 'Unspecified',
       dateOfExpiry: formatMRZDate(expiryRaw),
-      mrzLine1: line1,
+      mrzLine1: line1, // cleaned version
       mrzLine2: line2
     };
   };
