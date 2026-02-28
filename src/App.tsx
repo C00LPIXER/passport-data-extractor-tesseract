@@ -130,26 +130,26 @@ export default function App() {
 
   const cleanMRZLine1 = (line: string): string => {
     // MRZ Line 1 format: P<CCCNNNNN<<NNNNN<<<<<<... (44 chars)
-    // OCR commonly misreads '<' as 'C' (visually similar in OCR-B font)
-    // This function attempts to restore '<' characters when they've been misread
+    // Safety net: OCR may misread '<' as 'C','E','L','A' (visually similar in OCR-B font)
     if (line.length < 44) return line;
 
-    const nameSection = line.substring(5); // Skip P<CCC (type + country)
+    const nameSection = line.substring(5); // After P<CCC (type + issuing country)
 
-    // If << separator already exists, no correction needed
-    if (nameSection.includes('<<')) return line;
+    // If a proper << separator already exists between letter sequences, line is fine
+    if (/[A-Z]<<[A-Z]/.test(nameSection)) return line;
+    if (/[A-Z]<<$/.test(nameSection) || /^<</.test(nameSection)) return line;
 
     let cleaned = nameSection;
 
-    // Step 1: Restore trailing '<' filler characters
-    // The name field is padded with '<' but OCR reads them as C, E, L, A, etc.
-    // A run of 2+ C's followed by a mix of C/E/L/A at the end is almost certainly filler.
-    cleaned = cleaned.replace(/[C<]{2,}[CELA<]*$/, match => '<'.repeat(match.length));
+    // Step 1: Restore trailing filler — any run of 3+ chars from {C,E,L,A} at the end
+    // is almost certainly misread '<' padding (real names rarely end with 3+ of these)
+    cleaned = cleaned.replace(/[CELA]{3,}$/, match => '<'.repeat(match.length));
 
     // Step 2: Restore '<<' separator between surname and given names
-    // Use greedy match to find the last 'CC' (misread '<<') before given names + filler
-    if (!cleaned.includes('<<')) {
-      cleaned = cleaned.replace(/^(.+)CC([A-Z]+<+)$/, '$1<<$2');
+    // Find 'CC' between letter sequences — this is the misread '<<' separator
+    // We look for CC that has letters on both sides (surname CC givennames)
+    if (!/[A-Z]<<[A-Z]/.test(cleaned)) {
+      cleaned = cleaned.replace(/([A-Z])CC([A-Z])/, '$1<<$2');
     }
 
     return line.substring(0, 5) + cleaned;
@@ -200,6 +200,86 @@ export default function App() {
     };
   };
 
+  // --- Image preprocessing for MRZ accuracy ---
+
+  const otsuThreshold = (values: number[]): number => {
+    const histogram = new Array(256).fill(0);
+    for (const v of values) histogram[v]++;
+    const total = values.length;
+    let sumAll = 0;
+    for (let i = 0; i < 256; i++) sumAll += i * histogram[i];
+    let sumBg = 0, weightBg = 0, maxVariance = 0, best = 128;
+    for (let t = 0; t < 256; t++) {
+      weightBg += histogram[t];
+      if (weightBg === 0) continue;
+      const weightFg = total - weightBg;
+      if (weightFg === 0) break;
+      sumBg += t * histogram[t];
+      const meanBg = sumBg / weightBg;
+      const meanFg = (sumAll - sumBg) / weightFg;
+      const variance = weightBg * weightFg * (meanBg - meanFg) ** 2;
+      if (variance > maxVariance) {
+        maxVariance = variance;
+        best = t;
+      }
+    }
+    return best;
+  };
+
+  const preprocessImageForMRZ = (imageSrc: string, cropBottom: boolean): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d')!;
+
+        if (cropBottom) {
+          // Crop bottom 35% where MRZ typically lives
+          const cropHeight = Math.floor(img.height * 0.35);
+          const cropY = img.height - cropHeight;
+          canvas.width = img.width;
+          canvas.height = cropHeight;
+          ctx.drawImage(img, 0, cropY, img.width, cropHeight, 0, 0, img.width, cropHeight);
+        } else {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          ctx.drawImage(img, 0, 0);
+        }
+
+        // Convert to grayscale + Otsu binarization
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const { data } = imageData;
+        const grayValues: number[] = [];
+        for (let i = 0; i < data.length; i += 4) {
+          grayValues.push(Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]));
+        }
+        const threshold = otsuThreshold(grayValues);
+        for (let i = 0; i < data.length; i += 4) {
+          const bw = grayValues[i / 4] < threshold ? 0 : 255;
+          data[i] = bw;
+          data[i + 1] = bw;
+          data[i + 2] = bw;
+        }
+        ctx.putImageData(imageData, 0, 0);
+
+        // Scale up 3x for better OCR on small MRZ text
+        const scaled = document.createElement('canvas');
+        const sCtx = scaled.getContext('2d')!;
+        scaled.width = canvas.width * 3;
+        scaled.height = canvas.height * 3;
+        sCtx.imageSmoothingEnabled = false;
+        sCtx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
+
+        resolve(scaled.toDataURL('image/png'));
+      };
+      img.onerror = () => reject(new Error('Failed to load image for preprocessing'));
+      img.src = imageSrc;
+    });
+  };
+
+  // --- Main extraction with MRZ-optimized OCR ---
+
   const extractData = async () => {
     if (!selectedFile || !previewUrl) return;
 
@@ -216,29 +296,63 @@ export default function App() {
       } else {
         imageSrcs = [previewUrl];
       }
-      
-      let foundData: PassportData | null = null;
-      
-      for (let i = 0; i < imageSrcs.length; i++) {
-        setProgressMsg(`Scanning page ${i + 1} of ${imageSrcs.length}...`);
-        
-        const result = await Tesseract.recognize(imageSrcs[i], 'eng', {
-          logger: m => {
-            if (m.status === 'recognizing text') {
-              setProgressMsg(`Scanning page ${i + 1}: ${Math.round(m.progress * 100)}%`);
-            }
+
+      // Create a Tesseract worker with MRZ character whitelist.
+      // This is the key to accuracy: by restricting recognized characters to
+      // only A-Z, 0-9, and '<', Tesseract will correctly read '<' instead of
+      // misidentifying it as C, E, L, A, etc.
+      let currentPage = 0;
+      const totalPages = imageSrcs.length;
+      const worker = await Tesseract.createWorker('eng', 1, {
+        logger: (m: any) => {
+          if (m.status === 'recognizing text') {
+            setProgressMsg(`Scanning page ${currentPage + 1} of ${totalPages}: ${Math.round(m.progress * 100)}%`);
           }
-        });
-        
-        const text = result.data.text;
-        const mrzLines = extractMRZ(text);
-        
+        }
+      });
+      await worker.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',
+      });
+
+      let foundData: PassportData | null = null;
+
+      for (let i = 0; i < imageSrcs.length; i++) {
+        currentPage = i;
+        let mrzLines: string[] | null = null;
+
+        // Pass 1: Enhanced full image (handles already-cropped MRZ images)
+        setProgressMsg(`Enhancing page ${i + 1}...`);
+        try {
+          const enhancedFull = await preprocessImageForMRZ(imageSrcs[i], false);
+          const result = await worker.recognize(enhancedFull);
+          mrzLines = extractMRZ(result.data.text);
+        } catch { /* continue to next pass */ }
+
+        // Pass 2: Enhanced + cropped to bottom 35% (for full passport page images)
+        if (!mrzLines) {
+          setProgressMsg(`Scanning MRZ region of page ${i + 1}...`);
+          try {
+            const enhancedCropped = await preprocessImageForMRZ(imageSrcs[i], true);
+            const result = await worker.recognize(enhancedCropped);
+            mrzLines = extractMRZ(result.data.text);
+          } catch { /* continue to next pass */ }
+        }
+
+        // Pass 3: Original image as fallback (in case preprocessing degrades quality)
+        if (!mrzLines) {
+          setProgressMsg(`Scanning page ${i + 1} (original)...`);
+          const result = await worker.recognize(imageSrcs[i]);
+          mrzLines = extractMRZ(result.data.text);
+        }
+
         if (mrzLines) {
           foundData = parseMRZ(mrzLines);
-          break; // Stop at first page with valid MRZ
+          break;
         }
       }
-      
+
+      await worker.terminate();
+
       if (foundData) {
         setPassportData(foundData);
       } else {
